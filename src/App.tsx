@@ -1,43 +1,59 @@
 import '@blocksuite/editor/themes/affine.css'
 import './App.css'
 
-import { createIndexedDBProvider } from '@toeverything/y-indexeddb'
+import { AffineSchemas } from '@blocksuite/blocks/models'
 import { EditorContainer } from '@blocksuite/editor'
 import { Workspace } from '@blocksuite/store'
-import { AffineSchemas } from '@blocksuite/blocks/models'
-import { useEffect, useRef } from 'react'
-import { atom, useAtomValue, useAtom } from 'jotai'
+import { createIndexedDBProvider } from '@toeverything/y-indexeddb'
+
 import { assertExists } from '@blocksuite/store'
-import { atomWithStorage } from 'jotai/utils'
+import { createEffect, createMemo, createSignal } from 'solid-js'
+import { createStore } from 'solid-js/store'
 
-const workspaceIdsAtom = atomWithStorage<string[]>('workspaces', [])
-
-workspaceIdsAtom.onMount = (set) => {
-  if (localStorage.getItem('workspaces') === null) {
-    set([
-      'demo-workspace'
-    ])
-  }
+const [workspaceIdsStore, setStoreState] = createStore(
+  {
+    ids: [] as string[],
+  },
+  {
+    name: 'workspaces',
+  },
+)
+if (localStorage.getItem('workspaces') === null) {
+  setStoreState({
+    ids: ['demo-workspace'],
+  })
+} else {
+  setStoreState({
+    ids: JSON.parse(localStorage.getItem('workspaces') as string),
+  })
 }
 
-const currentWorkspaceIdAtom = atom<string | null>(null)
+createEffect(() => {
+  const nextIds = workspaceIdsStore.ids
+  localStorage.setItem('workspaces', JSON.stringify(nextIds))
+})
+
+const [currentWorkspaceIdSingal, setCurrentWorkspaceId] = createSignal<
+  string | null
+>(null)
 
 class WorkspaceMap extends Map<string, Workspace> {
   #lastWorkspaceId: string | null = null
-  public providers: Map<string, ReturnType<typeof createIndexedDBProvider>> = new Map()
+  public providers: Map<string, ReturnType<typeof createIndexedDBProvider>> =
+    new Map()
 
-  override set (key: string, workspace: Workspace) {
+  override set(key: string, workspace: Workspace) {
     const provider = createIndexedDBProvider(key, workspace.doc)
     this.providers.set(key, provider)
     provider.connect()
     provider.whenSynced.then(() => {
       if (workspace.isEmpty) {
         const page = workspace.createPage({
-          id: 'page0'
+          id: 'page0',
         })
 
         const pageBlockId = page.addBlock('affine:page', {
-          title: new Text()
+          title: new Text(),
         })
 
         page.addBlock('affine:surface', {}, null)
@@ -56,7 +72,7 @@ class WorkspaceMap extends Map<string, Workspace> {
     return super.set(key, workspace)
   }
 
-  override get (key: string) {
+  override get(key: string) {
     if (this.#lastWorkspaceId) {
       const lastWorkspace = super.get(this.#lastWorkspaceId)
       assertExists(lastWorkspace)
@@ -69,14 +85,13 @@ class WorkspaceMap extends Map<string, Workspace> {
 }
 
 const hashMap = new WorkspaceMap()
-
-const currentWorkspaceAtom = atom<Workspace | null>((get) => {
-  const id = get(currentWorkspaceIdAtom)
+const currentWorkspace = createMemo<Workspace | null>(() => {
+  const id = currentWorkspaceIdSingal()
   if (!id) return null
   let workspace = hashMap.get(id)
   if (!workspace) {
     workspace = new Workspace({
-      id
+      id,
     })
     workspace.register(AffineSchemas)
     hashMap.set(id, workspace)
@@ -84,8 +99,8 @@ const currentWorkspaceAtom = atom<Workspace | null>((get) => {
   return workspace
 })
 
-const editorAtom = atom<Promise<EditorContainer | null>>(async (get) => {
-  const workspace = get(currentWorkspaceAtom)
+const editorAccessor = createMemo<Promise<EditorContainer | null>>(async () => {
+  const workspace = currentWorkspace()
   if (!workspace) return null
   const editor = new EditorContainer()
   const provider = hashMap.providers.get(workspace.id)
@@ -97,31 +112,36 @@ const editorAtom = atom<Promise<EditorContainer | null>>(async (get) => {
   return editor
 })
 
-function App () {
-  const ref = useRef<HTMLDivElement>(null)
-  const editor = useAtomValue(editorAtom)
-  const ids = useAtomValue(workspaceIdsAtom)
-  const [currentId, setCurrentId] = useAtom(currentWorkspaceIdAtom)
-  useEffect(() => {
-    if (currentId === null && ids.length > 0) {
-      setCurrentId(ids[0])
+function App() {
+  let ref: HTMLDivElement = null as any
+
+  const getIds = createMemo(() => workspaceIdsStore.ids)
+
+  createEffect(() => {
+    const ids = getIds()
+    if (currentWorkspaceIdSingal() === null && ids.length > 0) {
+      setCurrentWorkspaceId(ids[0])
     }
-  }, [currentId, ids, setCurrentId])
-  const workspace = useAtomValue(currentWorkspaceAtom)
-  useEffect(() => {
+  })
+
+  createEffect(async () => {
+    const workspace = currentWorkspace()
+    const editor = editorAccessor()
     if (!editor || !workspace) return
-    if (ref.current) {
-      const div = ref.current
-      div.appendChild(editor)
+    if (ref) {
+      const editorEl = await editor
+      if (!editorEl) return
+      const div = ref
+      div.appendChild(editorEl)
       return () => {
-        div.removeChild(editor)
+        div.removeChild(editorEl)
       }
     }
-  }, [editor, workspace])
+  })
 
   return (
     <div>
-      <div ref={ref} id="editor-container"/>
+      <div ref={ref} id="editor-container" />
     </div>
   )
 }
